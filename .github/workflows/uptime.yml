@@ -1,0 +1,35 @@
+name: uptime dreamcar
+# Зовнішній монітор DreamCar: спрацьовує, коли origin мертвий і сам нічого не надішле (напр. apex 522).
+# Публічний репозиторій: хвилини Actions безкоштовні. Секрети: TG_TOKEN, TG_CHAT (ті самі, що в sneco-uptime/abrisart-uptime).
+# Антиспам: однаковий збій — раз на 60 хв; зелене після збою — «відновлено».
+on:
+  schedule: [{ cron: '4,19,34,49 * * * *' }]
+  workflow_dispatch:
+concurrency: { group: uptime, cancel-in-progress: true }
+permissions:
+  contents: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: restore state
+        uses: actions/cache/restore@v4
+        with: { path: state, key: 'state-${{ github.run_id }}', restore-keys: 'state-' }
+      - name: probe
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+        run: bash probe.sh
+      - name: save state
+        if: always()
+        uses: actions/cache/save@v4
+        with: { path: state, key: 'state-${{ github.run_id }}' }
+      - name: keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d%H)" = "0104" ] && [ "$(date -u +%M)" -lt 15 ]; then
+            git config user.name uptime-bot; git config user.email uptime-bot@users.noreply.github.com
+            date -u +%F > last-run.txt; git add last-run.txt; git commit -m "keepalive $(date -u +%F)" && git push
+          fi
