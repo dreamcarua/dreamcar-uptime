@@ -1,50 +1,40 @@
 #!/bin/bash
-# Зовнішній монітор DreamCar. Кожна перевірка з повтором; Telegram лише при збої (антиспам 60 хв) і при відновленні.
+# Зовнішній монітор DreamCar з GitHub Actions.
+# ВАЖЛИВО: раннери Actions мають датацентрові IP, і Cloudflare віддає їм БОТ-ЧЕЛЕНДЖ (HTTP 403) на *.dreamcar.ua.
+# 403 тут = "CF живий і фільтрує ботів", а НЕ реальний збій. Тому алертимо лише на 5xx/000 (origin/edge down —
+# саме той клас, що був у apex 522) і на прострочені сертифікати. 200/301/302/401/403/404 = доступно.
 set -u
 UA='Mozilla/5.0 (X11; Linux x86_64) Chrome/128 dreamcar-uptime/1.0'
 fail=''
 add(){ fail="$fail
 X $*"; }
-# code-only перевірка з очікуваним набором кодів (через кому)
-chk_code(){ # url, "коди", [UA]
+
+# origin/edge health: скарга лише якщо 5xx або нема відповіді (000). Реагує на 52x (Cloudflare origin down).
+chk_up(){ # url
   local code=000
   for t in 1 2; do
-    code=$(curl -sS -L --max-redirs 4 -A "${3:-$UA}" --compressed --max-time 30 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000)
-    case ",$2," in *",$code,"*) return 0;; esac
-    sleep 15
+    code=$(curl -sS -L --max-redirs 4 -A "$UA" --compressed --max-time 30 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || echo 000)
+    case "$code" in 000|5??) sleep 15;; *) return 0;; esac
   done
-  add "$1 -> HTTP $code (очікували $2)"
-}
-# перевірка з маркером у тілі
-chk_body(){ # url, маркер
-  local out code
-  for t in 1 2; do
-    out=$(curl -sS -L --max-redirs 4 -A "$UA" --compressed --max-time 30 -w '\n__%{http_code}' "$1" 2>/dev/null || true)
-    code=${out##*__}
-    if [ "$code" = 200 ] && grep -qiF -- "$2" <<<"$out"; then return 0; fi
-    sleep 15
-  done
-  add "$1 -> HTTP $code або немає «$2»"
+  add "$1 -> HTTP $code (origin/edge down)"
 }
 
-# 1) Публічна воронка (найкритичніше — активний цикл)
-# apex має або редіректити (301/302) або віддавати 200; 522/5xx = origin down
-chk_code https://dreamcar.ua/            '200,301,302'
-chk_code https://www.dreamcar.ua/        '200,301,302'
-chk_body https://audiq7.dreamcar.ua/     'dreamcar'
-chk_code https://ai.dreamcar.ua/         '200,301,302'
+# 1) Публічна воронка (активний цикл)
+chk_up https://dreamcar.ua/
+chk_up https://www.dreamcar.ua/
+chk_up https://audiq7.dreamcar.ua/
+chk_up https://ai.dreamcar.ua/
 # 2) Внутрішні інструменти (GitHub Pages)
-chk_code https://team.dreamcar.ua/       '200,301,302'
-chk_code https://dashboard.dreamcar.ua/  '200,301,302'
-chk_body https://brand.dreamcar.ua/      'dreamcar'
-# global-header — спільна залежність усіх внутрішніх сторінок
-chk_code https://brand.dreamcar.ua/assets/global-header.js '200'
+chk_up https://team.dreamcar.ua/
+chk_up https://dashboard.dreamcar.ua/
+chk_up https://brand.dreamcar.ua/
+chk_up https://brand.dreamcar.ua/assets/global-header.js
 
-# 3) Supabase health: REST-корінь має відповідати (200/401/404), НЕ 5xx; 5xx = БД/Auth впали
+# 3) Supabase health (не за CF-челенджем): 5xx/000 = БД/Auth впали
 sb=$(curl -sS -o /dev/null -A "$UA" --max-time 20 -w '%{http_code}' https://wotghlaehnvxyeacznvv.supabase.co/rest/v1/ || echo 000)
-case "$sb" in 5*|000) add "Supabase REST -> HTTP $sb (БД/Auth під загрозою)";; esac
+case "$sb" in 000|5??) add "Supabase REST -> HTTP $sb (БД/Auth під загрозою)";; esac
 au=$(curl -sS -o /dev/null -A "$UA" --max-time 20 -w '%{http_code}' https://wotghlaehnvxyeacznvv.supabase.co/auth/v1/health || echo 000)
-case "$au" in 5*|000) add "Supabase Auth health -> HTTP $au";; esac
+case "$au" in 000|5??) add "Supabase Auth health -> HTTP $au";; esac
 
 # 4) Сертифікати
 for host in dreamcar.ua audiq7.dreamcar.ua; do
